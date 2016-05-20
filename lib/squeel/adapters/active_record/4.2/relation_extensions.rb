@@ -86,9 +86,49 @@ module Squeel
           }]
         end
 
+
+        def build_arel
+          arel = Arel::SelectManager.new(table.engine, table)
+
+          build_joins(arel, joins_values.flatten) unless joins_values.empty?
+
+          collapse_wheres(arel, where_visit((where_values - ['']).uniq))
+
+          arel.having(*having_visit(having_values.uniq.reject(&:blank?))) unless having_values.empty?
+
+          arel.take(connection.sanitize_limit(limit_value)) if limit_value
+          arel.skip(offset_value.to_i) if offset_value
+          arel.group(*group_visit(group_values.uniq.reject(&:blank?))) unless group_values.empty?
+
+          build_order(arel)
+
+          build_select(arel)
+
+          arel.distinct(distinct_value)
+          arel.from(build_from) if from_value
+          arel.lock(lock_value) if lock_value
+
+          # Check if we are dealing with a version prior to Arel commit 590c784a30b13153667f8db7915998d7731e24e5
+          # where BindParam is changed from SqlLiteral to a Node
+          # https://github.com/rails/arel/commit/590c784a30b13153667f8db7915998d7731e24e5
+          if Arel::Nodes::BindParam.class.is_a? Arel::Nodes::SqlLiteral
+            # Reorder bind indexes when joins or subqueries include more bindings.
+            # Special for PostgreSQL
+            if arel.bind_values.any? || bind_values.size > 1
+              bvs = arel.bind_values + bind_values
+              arel.ast.grep(Arel::Nodes::BindParam).each_with_index do |bp, i|
+                column = bvs[i].first
+                bp.replace connection.substitute_at(column, i)
+              end
+            end
+          end
+
+          arel
+        end
+
         def expand_attrs_from_hash(opts)
           opts = ::ActiveRecord::PredicateBuilder.resolve_column_aliases(klass, opts)
-          
+
           bind_args = [opts]
           # Active Record 4.1 compatibility
           # (for commits before 08579e4078454c6058f1289b58bf5bfa26661376 - https://github.com/rails/rails/commit/08579e4078454c6058f1289b58bf5bfa26661376)
